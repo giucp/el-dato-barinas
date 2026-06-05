@@ -287,14 +287,9 @@ const SUPABASE_URL = 'https://lheknlauezomlmjiivsb.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_T5XutqHiPT958HCST7tyYw_NgkdZWG-';
 
 /* ===== Listas editables (igual que antes) ===== */
-const ZONAS = ['Alto Barinas','Centro','Ciudad Tavacare','Primero de Mayo','Av. 23 de Enero','Otra zona'];
-// Ubicaciones por tipo de servicio (edítalas libremente)
-const SECTORES   = ['Alto Barinas','Centro','Ciudad Tavacare','Primero de Mayo','Av. 23 de Enero','Los Guasimitos'];
-const ESTACIONES = ['E/S Venezuela','E/S El Trapiche','E/S Alto Barinas','E/S La Caramuca','E/S Cuatricentenaria'];
-const VIAS       = ['Av. 23 de Enero','Av. Cuatricentenaria','Redoma La Mantuana','Centro','Los Llanos'];
 const PRODUCTOS = [['🥩','Carne'],['🍗','Pollo'],['🧀','Queso'],['🌾','Harina Pan'],['🥚','Huevos'],
   ['🍔','Hamburguesa'],['🍕','Pizza'],['🌭','Perros'],['💡','Bombillo LED'],['🛢️','Aceite motor']];
-const SUGERIDOS = ['Carrito de la 23','Fruchmarinas','Mercado La Carolina','Panadería La Esquina','Av. Cuatricentenaria'];
+const UMBRAL_SUGERENCIA = 5;  // menciones para que un lugar sea sugerencia para todos
 
 // === Diccionario de palabras bloqueadas (en forma normalizada: sin acentos, minúsculas) ===
 // Se compara contra el texto "normalizado" (ver normalizar()), que neutraliza trucos como
@@ -329,15 +324,16 @@ function hayGroseria(t){ const n=normalizar(t); return BLOQUEADAS.some(w=>n.incl
 function tieneCaracteresRaros(t){ return /[^a-zA-Z0-9 áéíóúüñÁÉÍÓÚÜÑ.\-]/.test(t||''); }
 function textoNoPermitido(t){ return hayGroseria(t) || tieneCaracteresRaros(t); }
 
-// Configuración de cada tipo de servicio: dónde se reporta y qué opciones tiene
+// Configuración de cada tipo de servicio. "lugarTipo" decide de qué lista de
+// sugerencias (aprendidas por la comunidad) saca los nombres.
 const SERVICIOS = {
-  luz:      {titulo:'⚡ Luz',          ubLabel:'¿En qué sector?',   ubic:SECTORES,   ttl:'4 horas',
+  luz:      {titulo:'⚡ Luz',          ubLabel:'¿En qué sector?',   lugarTipo:'zona',     ph:'Ej: Alto Barinas…', ttl:'4 horas',
     sit:[['🔴','Se fue la luz','sin_luz'],['🟢','Llegó la luz','con_luz'],['🟡','Bajones / fluctuación','bajones']]},
-  agua:     {titulo:'💧 Agua',         ubLabel:'¿En qué sector?',   ubic:SECTORES,   ttl:'4 horas',
+  agua:     {titulo:'💧 Agua',         ubLabel:'¿En qué sector?',   lugarTipo:'zona',     ph:'Ej: Alto Barinas…', ttl:'4 horas',
     sit:[['🟢','Llegó con fuerza','con_agua'],['🟡','Poca presión','poca_agua'],['🔴','Sin agua','sin_agua']]},
-  gasolina: {titulo:'⛽ Gasolina',     ubLabel:'¿Cuál estación?',   ubic:ESTACIONES, ttl:'2 horas',
+  gasolina: {titulo:'⛽ Gasolina',     ubLabel:'¿Cuál estación?',   lugarTipo:'estacion', ph:'Ej: E/S Venezuela…', ttl:'2 horas',
     sit:[['🟢','Fluyendo / sin cola','fluyendo'],['🟡','Cola moderada','cola_media'],['🔴','Cola pesada','cola_pesada'],['❌','Cerrada / sin gasolina','cerrada']]},
-  via:      {titulo:'🚦 Tráfico / vías',ubLabel:'¿En qué vía o zona?',ubic:VIAS,      ttl:'2 horas',
+  via:      {titulo:'🚦 Tráfico / vías',ubLabel:'¿En qué vía o zona?',lugarTipo:'zona',     ph:'Ej: Av. 23 de Enero…', ttl:'2 horas',
     sit:[['⚠️','Accidente','accidente'],['🛑','Trancón / cola fuerte','trancon'],['🚧','Calle cerrada','cerrada_via'],['🚦','Semáforo dañado','semaforo']]}
 };
 
@@ -370,6 +366,30 @@ async function leer(tipos){
     .in('tipo', tipos).order('created_at',{ascending:false});
   if(error){ console.error(error); return []; }
   return data||[];
+}
+
+/* ---- Lugares aprendidos por la comunidad ---- */
+const clave = t => normalizar(t);   // misma normalización que el filtro, sirve de clave
+// Trae sugerencias de un tipo ('zona'/'estacion'/'sitio') que ya pasaron el umbral,
+// filtrando por lo que el usuario va escribiendo.
+async function sugerencias(tipo, texto){
+  if(!db) return [];
+  let q = db.from('lugares').select('nombre,menciones')
+    .eq('tipo', tipo).gte('menciones', UMBRAL_SUGERENCIA)
+    .order('menciones',{ascending:false}).limit(6);
+  const { data } = await q;
+  let lista = (data||[]).map(r=>r.nombre);
+  if(texto && texto.length>=1){
+    const n = normalizar(texto);
+    lista = lista.filter(nm => normalizar(nm).includes(n));
+  }
+  return lista;
+}
+// Registra un lugar (suma mención o lo crea). Silencioso: si falla, no rompe el reporte.
+async function registrarLugar(tipo, nombre){
+  if(!db || !nombre) return;
+  try{ await db.rpc('registrar_lugar', { p_tipo:tipo, p_nombre:nombre.trim(), p_clave:clave(nombre) }); }
+  catch(e){ console.error('lugar', e); }
 }
 
 /* ---- Navegación + recarga de datos ---- */
@@ -435,10 +455,21 @@ async function cargarEstatus(){
     return;
   }
 
-  // Luz / agua / gasolina: gana el reporte más reciente de cada ubicación
+  // Gana el reporte más reciente de cada ubicación reportada
   const porUb = {};
-  data.forEach(r=>{ if(r.zona && !porUb[r.zona]) porUb[r.zona]=r; });
-  cont.innerHTML = SERVICIOS[t].ubic.map(u=>{
+  const ordenadas = [];
+  data.forEach(r=>{ if(r.zona && !porUb[r.zona]){ porUb[r.zona]=r; ordenadas.push(r.zona); } });
+
+  // Añade las ubicaciones conocidas (sugerencias frecuentes) aunque no tengan reporte,
+  // para que se vean en gris como "sin datos" y no salga la pantalla vacía.
+  const conocidas = await sugerencias(SERVICIOS[t].lugarTipo, '');
+  conocidas.forEach(u=>{ if(!porUb[u]) ordenadas.push(u); });
+
+  if(!ordenadas.length){
+    cont.innerHTML = `<div class="empty"><span class="big">📭</span>Aún nadie ha reportado ${t}.<br>Toca el botón naranja para ser el primero.</div>`;
+    return;
+  }
+  cont.innerHTML = ordenadas.map(u=>{
     const r = porUb[u];
     return r ? rowEstatus(u, r) : rowVacio(u);
   }).join('');
@@ -501,14 +532,19 @@ function renderChooser(){
 
 /* FLUJO GENÉRICO DE SERVICIO (luz, agua, gasolina, vías) — 2 pasos */
 let svcTipo, svcStep, svcSel;
-function startServicio(tipo){ svcTipo=tipo; svcStep=0; svcSel={ub:undefined,sit:undefined}; renderServicio(); }
+function startServicio(tipo){ svcTipo=tipo; svcStep=0; svcSel={ub:'',sit:undefined}; renderServicio(); }
 function renderServicio(){
   const cfg = SERVICIOS[svcTipo];
   const dots=[0,1].map(i=>`<div class="stepdot ${i<=svcStep?'on':''}"></div>`).join('');
   let body;
   if(svcStep===0){
     body=`<h3>${cfg.titulo}</h3><div class="q">${cfg.ubLabel} · paso 1 de 2</div>
-      <div class="opts">${cfg.ubic.map((u,i)=>`<div class="opt ${svcSel.ub===i?'sel':''}" onclick="svcPick('ub',${i})"><span class="oe">📍</span>${u}</div>`).join('')}</div>`;
+      <div class="field">
+        <input id="ubInput" class="tinput" placeholder="${cfg.ph}" value="${(svcSel.ub||'').replace(/"/g,'&quot;')}" oninput="svcUb(this.value)" autocomplete="off">
+        <div class="warn" id="ubWarn">🚫 Solo letras y números, sin groserías.</div>
+        <div class="suggs" id="ubSuggs"></div>
+        <div class="sugg-hint">💡 Escribe el nombre. Si ya existe, tócalo en las sugerencias.</div>
+      </div>`;
   } else {
     body=`<h3>¿Cuál es la situación?</h3><div class="q">Toca lo que pasa · paso 2 de 2</div>
       <div class="opts">${cfg.sit.map((s,i)=>`<div class="opt ${svcSel.sit===i?'sel':''}" onclick="svcPick('sit',${i})"><span class="oe">${s[0]}</span>${s[1]}</div>`).join('')}</div>`;
@@ -516,19 +552,38 @@ function renderServicio(){
   const last = svcStep<1?`<button class="btn btn-prim" onclick="svcNext()">Siguiente</button>`:`<button class="btn btn-prim" onclick="svcSend()">Enviar reporte</button>`;
   $('sheet').innerHTML=`<div class="grip"></div><div class="steps">${dots}</div>${body}
     <div class="actions"><button class="btn btn-ghost" onclick="${svcStep>0?'svcBack()':'renderChooser()'}">←</button>${last}</div>`;
+  if(svcStep===0) pintarSuggsUb('');
 }
+async function pintarSuggsUb(texto){
+  const cont=$('ubSuggs'); if(!cont) return;
+  const lista = await sugerencias(SERVICIOS[svcTipo].lugarTipo, texto);
+  cont.innerHTML = lista.map(s=>`<span class="sugg" onclick="svcUsarSugg('${s.replace(/'/g,"\\'")}')">${s}<span class="pop">↗</span></span>`).join('');
+}
+function svcUb(v){
+  svcSel.ub=v;
+  const bad=textoNoPermitido(v);
+  $('ubInput').classList.toggle('bad',bad); $('ubWarn').classList.toggle('show',bad);
+  pintarSuggsUb(v);
+}
+function svcUsarSugg(s){ svcSel.ub=s; const el=$('ubInput'); if(el){el.value=s; svcUb(s);} }
 function svcPick(k,i){ svcSel[k]=i; renderServicio(); }
 function svcBack(){ if(svcStep>0){svcStep--; renderServicio();} }
-function svcNext(){ if(svcSel.ub===undefined) return; svcStep++; renderServicio(); }
+function svcNext(){
+  const u=(svcSel.ub||'').trim();
+  if(u.length<2){ $('ubWarn').textContent='Escribe dónde (mínimo 2 letras).'; $('ubWarn').classList.add('show'); return; }
+  if(textoNoPermitido(u)){ $('ubInput').classList.add('bad'); $('ubWarn').classList.add('show'); return; }
+  svcStep++; renderServicio();
+}
 async function svcSend(){
   if(svcSel.sit===undefined) return;
   if(enCooldown(svcTipo)){ renderAviso('Ya reportaste esto hace poco. Espera unos minutos. 🙏'); return; }
   const cfg=SERVICIOS[svcTipo];
-  const zona=cfg.ubic[svcSel.ub];
+  const zona=svcSel.ub.trim();
   const estado=cfg.sit[svcSel.sit][2];
   enviando();
   const { error } = await db.from('reportes').insert({ tipo:svcTipo, zona, estado });
   if(error){ renderAviso(error.message || JSON.stringify(error)); return; }
+  await registrarLugar(cfg.lugarTipo, zona);
   marcarCooldown(svcTipo);
   estatusTipo=svcTipo;
   await premiar();
@@ -537,7 +592,7 @@ async function svcSend(){
 
 /* FLUJO OFERTA */
 let oStep,oData;
-function startOferta(){ oStep=0; oData={prod:null,precio:'',zona:null,lugar:''}; renderOferta(); }
+function startOferta(){ oStep=0; oData={prod:null,precio:'',zona:'',lugar:''}; renderOferta(); }
 function renderOferta(){
   const dots=[0,1,2,3].map(i=>`<div class="stepdot ${i<=oStep?'on':''}"></div>`).join('');
   let body='';
@@ -551,19 +606,25 @@ function renderOferta(){
       <button class="key" onclick="dig('.')">.</button><button class="key" onclick="dig('0')">0</button><button class="key del" onclick="dig('del')">⌫</button></div>`;
   } else if(oStep===2){
     body=`<h3>¿En qué zona?</h3><div class="q">Para ubicar la oferta · paso 3 de 4</div>
-      <div class="opts">${ZONAS.map((z,i)=>`<div class="opt ${oData.zona===i?'sel':''}" onclick="oData.zona=${i};renderOferta()"><span class="oe">📍</span>${z}</div>`).join('')}</div>`;
+      <div class="field">
+        <input id="zonaInput" class="tinput" placeholder="Ej: Centro…" value="${(oData.zona||'').replace(/"/g,'&quot;')}" oninput="oZona(this.value)" autocomplete="off">
+        <div class="warn" id="zonaWarn">🚫 Solo letras y números, sin groserías.</div>
+        <div class="suggs" id="zonaSuggs"></div>
+        <div class="sugg-hint">💡 Escribe la zona. Si ya existe, tócala abajo.</div>
+      </div>`;
   } else {
-    const m=oData.lugar.length>=2?SUGERIDOS.filter(s=>s.toLowerCase().includes(oData.lugar.toLowerCase())):SUGERIDOS.slice(0,3);
     body=`<h3>¿Dónde lo viste?</h3><div class="q">El nombre del local · paso 4 de 4</div>
       <div class="field"><label>Nombre del lugar <span class="opt-tag">(opcional)</span></label>
-      <input id="lugarInput" class="tinput" placeholder="Ej: Carrito de la 23…" value="${oData.lugar.replace(/"/g,'&quot;')}" oninput="onLugar(this.value)">
-      <div class="warn" id="warnBox">🚫 No se permite: solo letras y números, sin groserías. Escribe solo el nombre del lugar.</div>
-      <div class="suggs">${m.map(s=>`<span class="sugg" onclick="useSugg('${s.replace(/'/g,"\\'")}')">${s}<span class="pop">↗</span></span>`).join('')}</div>
-      <div class="sugg-hint">💡 Sugerencias de la comunidad — tócalas en vez de teclear</div></div>`;
+      <input id="lugarInput" class="tinput" placeholder="Ej: Carrito de la 23…" value="${oData.lugar.replace(/"/g,'&quot;')}" oninput="onLugar(this.value)" autocomplete="off">
+      <div class="warn" id="warnBox">🚫 No se permite: solo letras y números, sin groserías.</div>
+      <div class="suggs" id="lugarSuggs"></div>
+      <div class="sugg-hint">💡 Si ya alguien lo reportó, tócalo en vez de teclear.</div></div>`;
   }
   const last = oStep<3?`<button class="btn btn-prim" onclick="oNext()">Siguiente</button>`:`<button class="btn btn-prim" onclick="oSend()">Enviar oferta</button>`;
   $('sheet').innerHTML=`<div class="grip"></div><div class="steps">${dots}</div>${body}
     <div class="actions" style="margin-top:18px"><button class="btn btn-ghost" onclick="${oStep>0?'oBack()':'renderChooser()'}">←</button>${last}</div>`;
+  if(oStep===2) pintarSuggsZona('');
+  if(oStep===3) pintarSuggsLugar('');
 }
 function dig(d){
   if(d==='del') oData.precio=oData.precio.slice(0,-1);
@@ -571,16 +632,38 @@ function dig(d){
   else { if(oData.precio.includes('.')&&oData.precio.split('.')[1].length>=2) return; oData.precio+=d; }
   renderOferta();
 }
+async function pintarSuggsZona(t){
+  const c=$('zonaSuggs'); if(!c) return;
+  const lista=await sugerencias('zona', t);
+  c.innerHTML=lista.map(s=>`<span class="sugg" onclick="oUsarZona('${s.replace(/'/g,"\\'")}')">${s}<span class="pop">↗</span></span>`).join('');
+}
+function oZona(v){
+  oData.zona=v;
+  const bad=textoNoPermitido(v);
+  $('zonaInput').classList.toggle('bad',bad); $('zonaWarn').classList.toggle('show',bad);
+  pintarSuggsZona(v);
+}
+function oUsarZona(s){ oData.zona=s; const el=$('zonaInput'); if(el){el.value=s; oZona(s);} }
+async function pintarSuggsLugar(t){
+  const c=$('lugarSuggs'); if(!c) return;
+  const lista=await sugerencias('sitio', t);
+  c.innerHTML=lista.map(s=>`<span class="sugg" onclick="useSugg('${s.replace(/'/g,"\\'")}')">${s}<span class="pop">↗</span></span>`).join('');
+}
 function onLugar(v){
   oData.lugar=v;
   const bad=textoNoPermitido(v);
   $('lugarInput').classList.toggle('bad',bad); $('warnBox').classList.toggle('show',bad);
+  pintarSuggsLugar(v);
 }
 function useSugg(s){ oData.lugar=s; const el=$('lugarInput'); if(el){el.value=s; onLugar(s);} }
 function oNext(){
   if(oStep===0&&oData.prod===null) return;
   if(oStep===1&&!oData.precio) return;
-  if(oStep===2&&oData.zona===null) return;
+  if(oStep===2){
+    const z=(oData.zona||'').trim();
+    if(z.length<2){ $('zonaWarn').textContent='Escribe la zona (mínimo 2 letras).'; $('zonaWarn').classList.add('show'); return; }
+    if(textoNoPermitido(z)){ $('zonaInput').classList.add('bad'); $('zonaWarn').classList.add('show'); return; }
+  }
   oStep++; renderOferta();
 }
 function oBack(){ if(oStep>0){oStep--; renderOferta();} }
@@ -588,11 +671,14 @@ async function oSend(){
   if(textoNoPermitido(oData.lugar)){ $('lugarInput').classList.add('bad'); $('warnBox').classList.add('show'); return; }
   if(enCooldown('oferta')){ renderAviso('Ya reportaste una oferta hace poco. Espera unos minutos. 🙏'); return; }
   enviando();
+  const zona=oData.zona.trim();
   const { error } = await db.from('reportes').insert({
     tipo:'oferta', producto:PRODUCTOS[oData.prod][1], precio:parseFloat(oData.precio),
-    zona:ZONAS[oData.zona], lugar:oData.lugar||null
+    zona, lugar:oData.lugar||null
   });
   if(error){ renderAviso(error.message || JSON.stringify(error)); return; }
+  await registrarLugar('zona', zona);
+  if(oData.lugar && oData.lugar.trim().length>=2) await registrarLugar('sitio', oData.lugar);
   marcarCooldown('oferta');
   await premiar();
   const lugar = oData.lugar?` en ${oData.lugar}`:'';
