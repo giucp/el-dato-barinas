@@ -229,10 +229,10 @@
 /* ========================================================================
    ===== CONFIG · PEGA AQUÍ TUS DOS LLAVES DE SUPABASE =====
    Las encuentras en: Supabase → Project Settings → API
-     - Project URL          → SUPABASE_URL
-     - Project API keys → anon public  → SUPABASE_KEY
+     - Project URL → SUPABASE_URL
+     - Project API keys → anon public → SUPABASE_KEY
    ======================================================================== */
-const SUPABASE_URL = 'https://lheknlauezomlmjiivsb.supabase.co/rest/v1/';
+const SUPABASE_URL = 'https://lheknlauezomlmjiivsb.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_T5XutqHiPT958HCST7tyYw_NgkdZWG-';
 
 /* ===== Listas editables (igual que antes) ===== */
@@ -241,7 +241,7 @@ const PRODUCTOS = [['🥩','Carne'],['🍗','Pollo'],['🧀','Queso'],['🌾','H
   ['🍔','Hamburguesa'],['🍕','Pizza'],['🌭','Perros'],['💡','Bombillo LED'],['🛢️','Aceite motor']];
 const SUGERIDOS = ['Carrito de la 23','Fruchmarinas','Mercado La Carolina','Panadería La Esquina','Av. Cuatricentenaria'];
 const BLOQUEADAS = ['coño','cono','marico','mierda','puta','maldito','chavez','maduro','guaido','psuv','oposicion'];
-const COOLDOWN_MIN = 30;   // minutos entre reportes del mismo tipo por dispositivo
+const COOLDOWN_MIN = 30; // minutos entre reportes del mismo tipo por dispositivo
 
 /* ======================= De aquí abajo es la lógica ======================= */
 const $ = id => document.getElementById(id);
@@ -252,7 +252,7 @@ else { $('setupWarn').classList.add('show'); }
 
 const EMOJI = Object.fromEntries(PRODUCTOS.map(p=>[p[1],p[0]]));
 const LUZ_INFO = {
-  sin_luz:{dot:'d-red',  badge:'b-red',  label:'Sin luz'},
+  sin_luz:{dot:'d-red', badge:'b-red', label:'Sin luz'},
   con_luz:{dot:'d-green',badge:'b-green',label:'Con luz'},
   bajones:{dot:'d-amber',badge:'b-amber',label:'Bajones'}
 };
@@ -278,7 +278,7 @@ function go(id){
   document.querySelectorAll('.nbtn').forEach(b=>b.classList.toggle('on', b.dataset.s===id));
   document.querySelector('.screens').scrollTop=0;
   if(id==='s-inicio') cargarInicio();
-  if(id==='s-luz')    cargarLuz();
+  if(id==='s-luz') cargarLuz();
   if(id==='s-ofertas')cargarOfertas();
 }
 
@@ -288,7 +288,7 @@ async function cargarInicio(){
   // resumen para el hero: último estado por tipo
   const ultLuz = luz.find(r=>r.tipo==='luz');
   const ultAgua= luz.find(r=>r.tipo==='agua');
-  $('h-luz').textContent  = ultLuz  ? (LUZ_INFO[ultLuz.estado]?.label||'—') : 'Sin datos';
+  $('h-luz').textContent = ultLuz ? (LUZ_INFO[ultLuz.estado]?.label||'—') : 'Sin datos';
   $('h-agua').textContent = ultAgua ? (LUZ_INFO[ultAgua.estado]?.label||'—') : 'Sin datos';
   // feed reciente: mezcla de todo
   const todo = await leer(['luz','agua','oferta']);
@@ -390,7 +390,7 @@ async function stepNext(){
   const zona=ZONAS[choices[0]], estado=LUZ_ESTADOS[choices[1]];
   enviando();
   const { error } = await db.from('reportes').insert({ tipo:'luz', zona, estado });
-  if(error){ renderAviso('No se pudo enviar. Revisa tu conexión.'); return; }
+  if(error){ renderAviso(error.message || JSON.stringify(error)); return; }
   marcarCooldown('luz');
   renderDone('Tu reporte ya está en el mapa y caduca solo en 4 horas.','s-luz',false);
 }
@@ -452,7 +452,7 @@ async function oSend(){
     tipo:'oferta', producto:PRODUCTOS[oData.prod][1], precio:parseFloat(oData.precio),
     zona:ZONAS[oData.zona], lugar:oData.lugar||null
   });
-  if(error){ renderAviso('No se pudo enviar. Revisa tu conexión.'); return; }
+  if(error){ renderAviso(error.message || JSON.stringify(error)); return; }
   marcarCooldown('oferta');
   const lugar = oData.lugar?` en ${oData.lugar}`:'';
   renderDone(`Reportaste ${PRODUCTOS[oData.prod][1]} a $${oData.precio}${lugar}. Ya aparece en Caza-ofertas.`,'s-ofertas',true);
@@ -479,4 +479,3 @@ cargarInicio();
 </script>
 </body>
 </html>
-
