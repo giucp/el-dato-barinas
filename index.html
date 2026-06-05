@@ -951,6 +951,12 @@ cargarInicio();
 })();
 var deferredPrompt=null;
 window.addEventListener('beforeinstallprompt', function(e){ e.preventDefault(); deferredPrompt=e; });
+// Registra el service worker (necesario para que Android instale como app completa)
+if('serviceWorker' in navigator){
+  window.addEventListener('load', function(){
+    navigator.serviceWorker.register('sw.js').catch(function(err){ console.log('SW', err); });
+  });
+}
 function instalarApp(){
   if(deferredPrompt){ deferredPrompt.prompt(); deferredPrompt=null; return; }
   var ios=/iphone|ipad|ipod/i.test(navigator.userAgent);
